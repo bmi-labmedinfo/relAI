@@ -9,55 +9,41 @@ from ReliabilityPackage.ReliabilityPrivateFunctions import _train_one_epoch, _co
     _contains_only_integers, _extract_values_proportionally
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
+from tqdm.auto import tqdm 
 
 
 # Functions
+def _plot_validation_loss_non_blocking(validation_loss, title="Loss"):
+    """Show the loss plot without blocking the rest of the code."""
+    fig, ax = plt.subplots()
+    ax.plot(validation_loss)
+    ax.set_xlabel("epochs")
+    ax.set_ylabel("Validation Loss")
+    ax.set_title(title)
+
+    # Non-blocking show (terminal-friendly)
+    plt.show(block=False)
+    # Give the GUI event loop a tiny slice so the window renders
+    plt.pause(0.001)
+    return fig, ax
 
 
-def create_autoencoder(layer_sizes):
+def train_autoencoder(
+    ae,
+    training_set,
+    validation_set,
+    batchsize,
+    epochs=1000,
+    optimizer_class=torch.optim.Adam,
+    optimizer_params=None,
+    loss_function=torch.nn.MSELoss(),
+):
     """
-    Creates an autoencoder model with the specified sizes of the layers.
-
-    This function creates an autoencoder model using the `AE` class, implemented as a PyTorch module, with the specified
-    layers' sizes.
-    The autoencoder is used for the implementation of the Density Principle.
-
-    :param list[int] layer_sizes: A list containing the number of nodes of each layer of the encoder (decoder built with
-     symmetry).
-
-    :return: An instance of the autoencoder model.
-    :rtype: ReliabilityClasses.AE
-    """
-    ae = AE(layer_sizes)
-    return ae
-
-
-def train_autoencoder(ae, training_set, validation_set, batchsize, epochs=1000, optimizer_class=torch.optim.Adam,
-                      optimizer_params=None, loss_function=torch.nn.MSELoss(),
-                      ):
-    """
-    Trains the autoencoder model using the provided training and validation sets.
-
-    This function trains the autoencoder model using the provided training and validation sets.
-    It performs multiple epochs of training, updating the model parameters based on the specified optimizer
-    and loss function. The training progress is evaluated on the validation set after each epoch, and the resulting
-    validation loss is shown in the image.
-
-    :param AE ae: The autoencoder model to be trained.
-    :param numpy.ndarray training_set: The training set.
-    :param numpy.ndarray validation_set: The validation set.
-    :param int batchsize: The batch size used for training.
-    :param int epochs: The number of training epochs (default: 1000).
-    :param optimizer_class: The optimizer class to be used for parameter updates (default: torch.optim.Adam).
-    :param dict optimizer_params: A dictionary of optimizer parameters (default: 'lr'=1e-4, 'weight_decay'=1e-8).
-    :param torch.nn.Module loss_function: The loss function used for training.
-        If None, the mean squared error (MSE) loss function will be used (default: torch.nn.MSELoss()).
-
-    :return: The trained autoencoder model.
-    :rtype: AE
+    Trains the autoencoder model using the provided training and validation sets,
+    using tqdm instead of printing epochs, and showing a non-blocking loss plot.
     """
     if optimizer_params is None:
-        optimizer_params = {'lr': 1e-4, 'weight_decay': 1e-8}
+        optimizer_params = {"lr": 1e-4, "weight_decay": 1e-8}
 
     optimizer = optimizer_class(ae.parameters(), **optimizer_params)
 
@@ -65,67 +51,61 @@ def train_autoencoder(ae, training_set, validation_set, batchsize, epochs=1000, 
     validation_loader = DataLoader(dataset=validation_set, batch_size=batchsize, shuffle=True)
 
     validation_loss = []
-    epoch_number = 0
 
-    for epoch in range(epochs):
-        print('EPOCH {}'.format(epoch_number + 1))
+    pbar = tqdm(range(epochs), desc="Training AE", unit="epoch", leave=True)
+    for epoch_number in pbar:
         ae.train(True)
-        avg_loss = _train_one_epoch(epoch_number, training_set, training_loader, optimizer, loss_function, ae)
+        train_loss = _train_one_epoch(
+            epoch_number, training_set, training_loader, optimizer, loss_function, ae
+        )
+
         ae.train(False)
         running_vloss = 0.0
-        for i, vdata in enumerate(validation_loader):
-            vinputs = vdata
-            voutputs = ae(vinputs.float())
-            vloss = loss_function(voutputs, vinputs.float())
-            running_vloss += vloss
-        avg_vloss = running_vloss / (i + 1)
-        validation_loss.append(avg_vloss.tolist())
-        epoch_number += 1
+        i = 0
+        with torch.no_grad():
+            for i, vdata in enumerate(validation_loader):
+                vinputs = vdata
+                voutputs = ae(vinputs.float())
+                vloss = loss_function(voutputs, vinputs.float())
+                running_vloss += vloss
 
-    fig, ax = plt.subplots()
-    plt.plot(validation_loss)
-    plt.xlabel('epochs')
-    plt.ylabel('Validation Loss')
-    plt.title('Loss')
-    plt.show()
+        avg_vloss = (running_vloss / (i + 1)).item() if (i + 1) > 0 else float("nan")
+        validation_loss.append(avg_vloss)
+
+        # update tqdm postfix (shows in terminal)
+        try:
+            train_loss_val = float(train_loss)
+        except Exception:
+            train_loss_val = train_loss.item() if hasattr(train_loss, "item") else train_loss
+
+        pbar.set_postfix(train_loss=f"{train_loss_val:.6f}", val_loss=f"{avg_vloss:.6f}")
+
+    _plot_validation_loss_non_blocking(validation_loss, title="Validation Loss")
     return ae
 
 
-def create_and_train_autoencoder(training_set, validation_set, batchsize, layer_sizes=None, epochs=1000,
-                                 optimizer_class=torch.optim.Adam, optimizer_params=None,
-                                 loss_function=torch.nn.MSELoss(),
-                                 ):
+def create_and_train_autoencoder(
+    training_set,
+    validation_set,
+    batchsize,
+    layer_sizes=None,
+    epochs=1000,
+    optimizer_class=torch.optim.Adam,
+    optimizer_params=None,
+    loss_function=torch.nn.MSELoss(),
+):
     """
-    Creates and trains an autoencoder model using the provided training and validation sets.
-
-    This function creates an autoencoder model based on the specified layers' sizes and trains it using
-    the provided training and validation sets. It performs multiple epochs of training, updating the model
-    parameters based on the specified optimizer and loss function. The training progress is evaluated on
-    the validation set after each epoch, and the resulting validation loss is shown in the image.
-
-    :param numpy.ndarray training_set: The training set.
-    :param numpy.ndarray validation_set: The validation set.
-    :param int batchsize: The batch size used for training.
-    :param list[int] layer_sizes: A list containing the number of nodes of each layer of the encoder (decoder built with
-     symmetry).
-        If None, the default dimension of the encoder's layers is [dim_input, dim_input + 4, dim_input + 8,
-        dim_input + 16, dim_input + 32]
-    :param int epochs: The number of training epochs (default: 1000).
-    :param optimizer_class: The optimizer class to be used for parameter updates (default: torch.optim.Adam).
-    :param dict optimizer_params: A dictionary of optimizer parameters (default: 'lr'=1e-4, 'weight_decay'=1e-8).
-    :param torch.nn.Module loss_function: The loss function used for training.
-        If None, the mean squared error (MSE) loss function will be used (default: torch.nn.MSELoss()).
-
-    :return: The trained autoencoder model.
-    :rtype: torch.nn.Module
+    Creates and trains an autoencoder model using the provided training and validation sets,
+    using tqdm instead of printing epochs, and showing a non-blocking loss plot.
     """
     if layer_sizes is None:
         dim_input = training_set.shape[1]
         layer_sizes = [dim_input, dim_input + 4, dim_input + 8, dim_input + 16, dim_input + 32]
+
     ae = AE(layer_sizes)
 
     if optimizer_params is None:
-        optimizer_params = {'lr': 1e-4, 'weight_decay': 1e-8}
+        optimizer_params = {"lr": 1e-4, "weight_decay": 1e-8}
 
     optimizer = optimizer_class(ae.parameters(), **optimizer_params)
 
@@ -133,29 +113,35 @@ def create_and_train_autoencoder(training_set, validation_set, batchsize, layer_
     validation_loader = DataLoader(dataset=validation_set, batch_size=batchsize, shuffle=True)
 
     validation_loss = []
-    epoch_number = 0
 
-    for epoch in range(epochs):
-        print('EPOCH {}'.format(epoch_number + 1))
+    pbar = tqdm(range(epochs), desc="Training AE", unit="epoch", leave=True)
+    for epoch_number in pbar:
         ae.train(True)
-        avg_loss = _train_one_epoch(epoch_number, training_set, training_loader, optimizer, loss_function, ae)
+        train_loss = _train_one_epoch(
+            epoch_number, training_set, training_loader, optimizer, loss_function, ae
+        )
+
         ae.train(False)
         running_vloss = 0.0
-        for i, vdata in enumerate(validation_loader):
-            vinputs = vdata
-            voutputs = ae(vinputs.float())
-            vloss = loss_function(voutputs, vinputs.float())
-            running_vloss += vloss
-        avg_vloss = running_vloss / (i + 1)
-        validation_loss.append(avg_vloss.tolist())
-        epoch_number += 1
+        i = 0
+        with torch.no_grad():
+            for i, vdata in enumerate(validation_loader):
+                vinputs = vdata
+                voutputs = ae(vinputs.float())
+                vloss = loss_function(voutputs, vinputs.float())
+                running_vloss += vloss
 
-    fig, ax = plt.subplots()
-    plt.plot(validation_loss)
-    plt.xlabel('epochs')
-    plt.ylabel('Validation Loss')
-    plt.title('Loss')
-    plt.show()
+        avg_vloss = (running_vloss / (i + 1)).item() if (i + 1) > 0 else float("nan")
+        validation_loss.append(avg_vloss)
+
+        try:
+            train_loss_val = float(train_loss)
+        except Exception:
+            train_loss_val = train_loss.item() if hasattr(train_loss, "item") else train_loss
+
+        pbar.set_postfix(train_loss=f"{train_loss_val:.6f}", val_loss=f"{avg_vloss:.6f}")
+
+    _plot_validation_loss_non_blocking(validation_loss, title="Validation Loss")
     return ae
 
 
