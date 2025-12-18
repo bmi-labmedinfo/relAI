@@ -5,7 +5,7 @@ with open("Readme.md", "r") as f:
 
 setup(
     name="ReliabilityPackage",
-    version="0.0.19",
+    version="0.0.20",
     description="A tool to compute the reliability of Machine Learning predictions",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
